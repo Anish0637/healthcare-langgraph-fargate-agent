@@ -9,3 +9,8 @@ SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You are a healthcare assistant. Follow policy and never expose PHI.",
 )
+
+# Bedrock Knowledge Base (RAG)
+KNOWLEDGE_BASE_ID = os.getenv("KNOWLEDGE_BASE_ID", "")  # e.g. "ABCD1234EF"
+KNOWLEDGE_BASE_MAX_RESULTS = int(os.getenv("KNOWLEDGE_BASE_MAX_RESULTS", "5"))
+KNOWLEDGE_BASE_ENABLED = bool(KNOWLEDGE_BASE_ID)

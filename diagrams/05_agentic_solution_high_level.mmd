@@ -11,7 +11,10 @@ flowchart LR
     O --> R[Memory & Retrieval]
     R --> D[DynamoDB\nSession memory]
     R --> S[S3\nLong-term artifacts]
-    R --> V[Vector Store\nOpenSearch Serverless / KB]
+    R --> KB[Bedrock Knowledge Base\nRAG / Vector Search]
+    KB --> EMB[Titan Embeddings\nChunking + Indexing]
+    KB --> OSS[OpenSearch Serverless\nVector Store]
+    S --> KB
 
     O --> E[Event Layer\nEventBridge + SQS/SNS]
 
@@ -49,7 +52,9 @@ flowchart LR
     style R fill:#e0f2f1
     style D fill:#e1f5fe
     style S fill:#e1f5fe
-    style V fill:#e1f5fe
+    style KB fill:#e8eaf6
+    style EMB fill:#e8eaf6
+    style OSS fill:#e8eaf6
     style E fill:#fce4ec
     style G1 fill:#ffecb3
     style G2 fill:#ffecb3

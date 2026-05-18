@@ -12,7 +12,8 @@ try:
 except ImportError:  # pragma: no cover
     ChatBedrockConverse = None
 
-from app.config import AWS_PROFILE, AWS_REGION, BEDROCK_MODEL_IDS, SYSTEM_PROMPT
+from app.config import AWS_PROFILE, AWS_REGION, BEDROCK_MODEL_IDS, KNOWLEDGE_BASE_ENABLED, KNOWLEDGE_BASE_ID, KNOWLEDGE_BASE_MAX_RESULTS, SYSTEM_PROMPT
+from app.tools import retrieve_from_knowledge_base
 
 
 class AgentState(TypedDict):
@@ -74,11 +75,32 @@ def _invoke_with_fallback(messages: list[BaseMessage], preferred: str | None = N
     return fallback, "fallback", "fallback"
 
 
+def _build_rag_context(user_query: str) -> str:
+    """Retrieve relevant passages from Bedrock Knowledge Base and format as context."""
+    if not KNOWLEDGE_BASE_ENABLED:
+        return ""
+    context = retrieve_from_knowledge_base({"query": user_query})
+    if context.startswith("Knowledge Base not configured") or context.startswith("No relevant") or context.startswith("Knowledge base retrieval failed"):
+        return ""
+    return f"\n\n--- Relevant Clinical Knowledge ---\n{context}\n--- End Knowledge ---"
+
+
 def assistant(state: AgentState) -> AgentState:
     msgs = state["messages"]
-    response, model_name, strategy = _invoke_with_fallback([SystemMessage(content=SYSTEM_PROMPT), *msgs])
+
+    # Inject RAG context from Bedrock Knowledge Base into the system prompt
+    user_query = next((m.content for m in reversed(msgs) if isinstance(m, HumanMessage)), "")
+    rag_context = _build_rag_context(user_query)
+    system_content = SYSTEM_PROMPT + rag_context
+
+    response, model_name, strategy = _invoke_with_fallback([SystemMessage(content=system_content), *msgs])
     if hasattr(response, "response_metadata"):
-        response.response_metadata = {**getattr(response, "response_metadata", {}), "selected_model": model_name, "strategy": strategy}
+        response.response_metadata = {
+            **getattr(response, "response_metadata", {}),
+            "selected_model": model_name,
+            "strategy": strategy,
+            "rag_used": bool(rag_context),
+        }
     return {"messages": [response]}
 
 

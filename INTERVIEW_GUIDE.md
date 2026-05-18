@@ -444,7 +444,97 @@ New lab result arrives in EHR system
 
 ---
 
-## 🔍 CloudTrail — Immutable Audit for HIPAA
+## 🧠 Bedrock Knowledge Base — RAG Integration
+
+### What It Is
+
+Bedrock Knowledge Base provides **Retrieval-Augmented Generation (RAG)** — the agent retrieves relevant clinical documents from a vector store before calling the LLM, injecting that context into the system prompt. This gives the agent **long-term knowledge** beyond its training data.
+
+### Architecture
+
+```
+User query: "What are the drug interactions for metformin?"
+│
+├── app/tools.py: retrieve_from_knowledge_base({"query": "metformin drug interactions"})
+│     └── bedrock-agent-runtime:Retrieve → Knowledge Base ID
+│           └── Titan Embeddings converts query to vector
+│           └── OpenSearch Serverless finds top-5 nearest passages
+│           └── Returns scored passage text + S3 source URIs
+│
+├── app/graph.py: _build_rag_context() injects passages into system prompt
+│     └── SystemPrompt = base_prompt + "--- Relevant Clinical Knowledge ---\n{passages}"
+│
+└── Bedrock LLM receives enriched context → accurate, grounded response
+```
+
+### How It's Implemented in This Codebase
+
+**`app/config.py`** — three new env vars:
+```python
+KNOWLEDGE_BASE_ID        = os.getenv("KNOWLEDGE_BASE_ID", "")     # e.g. "ABCD1234EF"
+KNOWLEDGE_BASE_MAX_RESULTS = int(os.getenv("KNOWLEDGE_BASE_MAX_RESULTS", "5"))
+KNOWLEDGE_BASE_ENABLED   = bool(KNOWLEDGE_BASE_ID)
+```
+
+**`app/tools.py`** — `retrieve_from_knowledge_base()` tool:
+```python
+client.retrieve(
+    knowledgeBaseId=kb_id,
+    retrievalQuery={"text": query},
+    retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": 5}}
+)
+# Returns: scored passages with S3 source URIs
+```
+
+**`app/graph.py`** — `_build_rag_context()` called before every LLM invocation:
+```python
+rag_context = _build_rag_context(user_query)
+system_content = SYSTEM_PROMPT + rag_context   # injected into system message
+```
+Response metadata includes `"rag_used": true/false` for observability.
+
+### Setting Up the Knowledge Base on AWS
+
+```bash
+# 1. Create S3 bucket with clinical docs (formularies, clinical guidelines, drug reference)
+aws s3 mb s3://healthcare-agent-knowledge-docs
+
+# 2. Upload source documents
+aws s3 cp ./clinical-docs/ s3://healthcare-agent-knowledge-docs/ --recursive
+
+# 3. Create Knowledge Base in console or CLI
+#    - Embedding model: amazon.titan-embed-text-v2:0
+#    - Vector store: OpenSearch Serverless (auto-created)
+#    - Data source: S3 bucket above
+
+# 4. Set env var in ECS task definition
+KNOWLEDGE_BASE_ID=<your-kb-id>
+```
+
+### RAG vs Fine-Tuning vs Base LLM
+
+| Approach | Knowledge freshness | Cost | PHI risk |
+|---|---|---|---|
+| **Base LLM only** (current without KB) | Frozen at training cutoff | Low | Low |
+| **RAG with KB** (now integrated) | Real-time, update S3 any time | Medium | Redact S3 docs before indexing |
+| **Fine-tuning** | Baked in at training time | High | Never fine-tune on real PHI |
+
+### IAM Permission to Add to Task Role
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
+  "Resource": "arn:aws:bedrock:us-east-1:582766763952:knowledge-base/<KB_ID>"
+}
+```
+
+**Interview one-liner:**
+> "RAG with Bedrock Knowledge Base lets the agent ground its responses in up-to-date clinical documents — formularies, drug references, clinical guidelines — without fine-tuning. I store source docs in S3, Titan Embeddings indexes them into OpenSearch Serverless, and the agent calls `bedrock-agent-runtime:Retrieve` before every LLM call, injecting the top-5 scored passages into the system prompt. The `rag_used` flag in response metadata lets me measure retrieval quality via CloudWatch."
+
+---
+
+
 
 CloudTrail records every AWS API call made by your agent — who called what, when, from where.
 
