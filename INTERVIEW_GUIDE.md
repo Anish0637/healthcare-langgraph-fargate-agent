@@ -395,6 +395,183 @@ A: ECS auto-scaling: Set target CPU (70%) → scales up/down. DynamoDB on-demand
 
 ---
 
+## ⚙️ Step Functions & Event Layer
+
+### Why Step Functions in a LangGraph Agent?
+
+LangGraph handles **linear/cyclic graph execution within a single request**. Step Functions adds value for **async, long-running, or distributed orchestration** that outlives a single HTTP request.
+
+**Example — Prior Authorization Workflow:**
+```
+Patient submits prior auth request
+  → Lambda: LangGraph agent collects clinical data (30s)
+  → Step Functions WAIT state: pause 24–72 hours for doctor review
+  → Lambda: LangGraph agent resumes, checks approval status
+  → Lambda: Notify patient/insurance
+```
+LangGraph cannot "pause for 72 hours" — it's stateless per invocation. Step Functions manages the long-lived state machine.
+
+**Use Step Functions when you need:**
+- Multi-day HITL approval flows (prior auth, prescriptions)
+- Retry logic with exponential backoff across multiple agents
+- Parallel fan-out: run 5 specialist agents simultaneously, wait for all (`Map` state)
+- Coordinating multiple LangGraph agents as sub-tasks
+
+---
+
+### Why an Event Layer (EventBridge + SQS/SNS)?
+
+LangGraph is synchronous request-response. The event layer decouples producers from consumers and enables **reactive, asynchronous triggering**.
+
+**Example — EHR Record Update Trigger:**
+```
+New lab result arrives in EHR system
+  → EventBridge rule: matches event pattern {source: "ehr.labs"}
+  → SQS queue: buffers the event
+  → Lambda consumer: invokes LangGraph agent with lab data
+  → Agent: analyzes result, checks drug interactions, alerts clinician
+```
+
+| Scenario | Without Event Layer | With Event Layer |
+|---|---|---|
+| EHR sends 1000 records at once | Agent overloaded, dropped | SQS buffers, processes at safe rate |
+| Agent fails mid-processing | Data lost | SQS retries + dead-letter queue |
+| Multiple downstream consumers | EHR must know all endpoints | EventBridge fan-out to N subscribers |
+| Scheduled agent runs | Cron on EC2 | EventBridge Scheduler → Lambda → Agent |
+
+**Interview one-liner:**
+> "LangGraph handles *what to think*, Step Functions handles *when to act*, EventBridge/SQS handles *what triggered the action*."
+
+---
+
+## 🔍 CloudTrail — Immutable Audit for HIPAA
+
+CloudTrail records every AWS API call made by your agent — who called what, when, from where.
+
+**Your agent generates these CloudTrail events at runtime:**
+```
+LangGraph Agent (ECS Task Role: healthcare-langgraph-task-role)
+  → bedrock:InvokeModel        ← which model, which prompt, when
+  → dynamodb:PutItem           ← storing session memory
+  → dynamodb:GetItem           ← reading patient context
+  → logs:PutLogEvents          ← writing to CloudWatch
+  → kms:Decrypt                ← every time encrypted PHI is read
+```
+
+**CloudTrail vs CloudWatch Logs:**
+
+| | CloudWatch Logs (`app/audit.py`) | CloudTrail |
+|---|---|---|
+| Source | Your application code | AWS control plane |
+| Tamper-proof | No (container can write anything) | Yes (managed by AWS) |
+| Covers | Business logic decisions | AWS API calls |
+| HIPAA §164.312(b) | Partial | Required |
+
+**Healthcare audit query example:**
+```sql
+-- CloudTrail Lake: "Who accessed patient data on May 15?"
+SELECT eventTime, userIdentity.sessionContext.sessionIssuer.arn, requestParameters
+FROM cloudtrail_lake_table
+WHERE eventName = 'GetItem'
+  AND eventTime BETWEEN '2026-05-15T00:00:00Z' AND '2026-05-15T23:59:59Z'
+  AND requestParameters LIKE '%tenant_id%'
+```
+
+**Interview one-liner:**
+> "For HIPAA I enable CloudTrail with S3 archival and `--enable-log-file-validation`, ship to CloudWatch for real-time alerting via metric filters, and use CloudTrail Lake for ad-hoc SQL audit queries — covering the immutable audit trail required under HIPAA §164.312(b)."
+
+---
+
+## 🔐 KMS Encryption
+
+Without customer-managed KMS keys, AWS encrypts with AWS-managed keys — you have no per-key audit, no revocation control.
+
+**Where to apply KMS CMKs in this stack:**
+
+| Resource | Why |
+|---|---|
+| DynamoDB `healthcare-agent-memory` | Encrypt patient session data; revoke key = instant data lockout |
+| CloudWatch Logs `/ecs/healthcare-langgraph-agent` | Logs may contain PHI even after `app/pii.py` redaction |
+| ECR image | Encrypt container image at rest |
+| S3 (CloudTrail + audit bucket) | HIPAA requires encryption of stored PHI |
+| Bedrock invocation logs | Prompts/responses logged by Bedrock may contain PHI |
+
+**Envelope encryption flow:**
+```
+Agent writes patient data to DynamoDB
+  → DynamoDB calls KMS:GenerateDataKey
+  → KMS returns plaintext key + encrypted key
+  → DynamoDB encrypts data with plaintext key
+  → Plaintext key discarded immediately; encrypted key stored alongside data
+  → Every kms:Decrypt call is logged in CloudTrail
+```
+
+**Enable automatic key rotation (annual):**
+```bash
+aws kms enable-key-rotation --key-id <your-cmk-id>
+```
+
+---
+
+## 🛡️ WAF (Web Application Firewall)
+
+Current deployment (`13.223.229.249:8080`) is directly exposed. Production requires ALB + WAF.
+
+**Production topology:**
+```
+Internet → Route 53 → CloudFront (optional) → ALB + WAF → ECS Fargate (private subnet)
+```
+
+**WAF rules for a healthcare LLM agent:**
+
+| Rule | What It Blocks |
+|---|---|
+| `AWSManagedRulesCommonRuleSet` | SQLi, XSS, path traversal |
+| `AWSManagedRulesKnownBadInputsRuleSet` | Log4j, Spring4Shell exploits |
+| `AWSManagedRulesAmazonIpReputationList` | Known malicious IPs |
+| Rate limiting (custom) | Brute-force on `/invoke`; e.g. 100 req/5min per IP |
+| Geo restriction (custom) | Block non-US traffic if scope is US-only |
+| Size constraint (custom) | Reject payloads >50KB to prevent oversized prompt injection |
+
+**Prompt injection + WAF:**
+WAF is a first line (blocks known patterns, oversized payloads, bad IPs). Your `app/governance.py` Bedrock Guardrails handle semantic prompt injection that WAF cannot detect.
+
+---
+
+## 🏰 Full Defence-in-Depth Stack
+
+```
+Request enters system
+│
+├── WAF              → OWASP Top 10, rate limiting, geo-filter
+├── API Gateway      → AuthN (Cognito/JWT), throttling, schema validation
+├── ALB              → TLS termination (ACM cert), health checks
+│
+└── ECS Container
+    ├── app/auth.py       → JWT validation, tenant isolation
+    ├── app/security.py   → RBAC / ABAC / CBAC policy engine
+    ├── app/governance.py → Bedrock Guardrails, content filtering
+    ├── app/pii.py        → PHI redaction at input + output
+    └── app/hitl.py       → Flag high-risk decisions for human review
+│
+└── Data layer
+    ├── KMS CMK           → DynamoDB, CWL, S3, ECR all encrypted
+    ├── VPC               → ECS in private subnet, no direct internet
+    ├── Security Groups   → Least-privilege port access (8080 only)
+    └── IAM Task Role     → Scoped to specific DynamoDB table + Bedrock models
+│
+└── Audit & Threat layer
+    ├── CloudTrail        → Immutable AWS API audit log → S3 + CWL
+    ├── CloudWatch Logs   → Application-level audit (app/audit.py)
+    ├── AWS Config        → Detect config drift (e.g. SG port opened)
+    └── GuardDuty         → Runtime threat detection (unusual DynamoDB scan, crypto mining)
+```
+
+**Interview one-liner:**
+> "I layer security: WAF at the edge for OWASP Top 10 + rate limiting, KMS CMKs for encryption at rest of all PHI stores with automatic key rotation, VPC private subnets so the agent never has a public IP, least-privilege IAM task roles scoped to specific DynamoDB tables and Bedrock models, GuardDuty for runtime threat detection, and CloudTrail + AWS Config for immutable audit and compliance drift detection."
+
+---
+
 ## 🎯 Interview Success Checklist
 
 - [ ] Understand the 9-layer security pipeline
@@ -409,6 +586,12 @@ A: ECS auto-scaling: Set target CPU (70%) → scales up/down. DynamoDB on-demand
 - [ ] Explain monitoring and troubleshooting
 - [ ] Have talking points for scalability
 - [ ] Discuss HIPAA/compliance readiness
+- [ ] Explain Step Functions vs LangGraph (when to use each)
+- [ ] Explain EventBridge/SQS decoupling and async triggering
+- [ ] Describe CloudTrail's role vs CloudWatch Logs for HIPAA
+- [ ] Explain KMS envelope encryption and key rotation
+- [ ] Describe WAF rules relevant to LLM/healthcare APIs
+- [ ] Articulate the full defence-in-depth stack in one answer
 
 ---
 

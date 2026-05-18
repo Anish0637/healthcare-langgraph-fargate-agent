@@ -1,0 +1,61 @@
+flowchart LR
+    U[Users / Apps] --> A[API Gateway]
+    A --> O[Agent Orchestrator\nLambda or ECS Fargate]
+
+    O --> M[Amazon Bedrock\nLLM + Guardrails]
+    O --> W[AWS Step Functions\nMulti-step workflow]
+    O --> T[Tool Executors\nLambda Functions]
+
+    T --> I[Enterprise Systems\nRDS / SaaS / Internal APIs]
+
+    O --> R[Memory & Retrieval]
+    R --> D[DynamoDB\nSession memory]
+    R --> S[S3\nLong-term artifacts]
+    R --> V[Vector Store\nOpenSearch Serverless / KB]
+
+    O --> E[Event Layer\nEventBridge + SQS/SNS]
+
+    subgraph Security_and_Governance
+      G1[IAM Roles]
+      G2[KMS Encryption]
+      G3[Secrets Manager]
+      G4[CloudTrail Audit]
+      G5[WAF + Shield]
+    end
+
+    subgraph Observability
+      C1[CloudWatch Logs]
+      C2[CloudWatch Metrics/Alarms]
+      C3[X-Ray Tracing]
+    end
+
+    O --> C1
+    O --> C2
+    O --> C3
+
+    A --> G5
+    O --> G1
+    O --> G2
+    O --> G3
+    O --> G4
+
+    style U fill:#e3f2fd
+    style A fill:#fff3e0
+    style O fill:#e8f5e9
+    style M fill:#f3e5f5
+    style W fill:#f1f8e9
+    style T fill:#ede7f6
+    style I fill:#ffe0b2
+    style R fill:#e0f2f1
+    style D fill:#e1f5fe
+    style S fill:#e1f5fe
+    style V fill:#e1f5fe
+    style E fill:#fce4ec
+    style G1 fill:#ffecb3
+    style G2 fill:#ffecb3
+    style G3 fill:#ffecb3
+    style G4 fill:#ffecb3
+    style G5 fill:#ffecb3
+    style C1 fill:#dcedc8
+    style C2 fill:#dcedc8
+    style C3 fill:#dcedc8
