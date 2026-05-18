@@ -1,0 +1,36 @@
+{
+  "family": "healthcare-langgraph-agent",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/healthcare-langgraph-task-role",
+  "containerDefinitions": [
+    {
+      "name": "healthcare-langgraph-agent",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/healthcare-langgraph-agent:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "AWS_REGION", "value": "<REGION>"},
+        {"name": "BEDROCK_MODEL_ID", "value": "amazon.nova-micro-v1:0"},
+        {"name": "DDB_MEMORY_TABLE", "value": "healthcare-agent-memory"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/healthcare-langgraph-agent",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
