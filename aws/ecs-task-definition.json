@@ -21,7 +21,9 @@
       "environment": [
         {"name": "AWS_REGION", "value": "<REGION>"},
         {"name": "BEDROCK_MODEL_ID", "value": "amazon.nova-micro-v1:0"},
-        {"name": "DDB_MEMORY_TABLE", "value": "healthcare-agent-memory"}
+        {"name": "DDB_MEMORY_TABLE", "value": "healthcare-agent-memory"},
+        {"name": "KNOWLEDGE_BASE_ID", "value": "9E95EEZPIA"},
+        {"name": "KNOWLEDGE_BASE_MAX_RESULTS", "value": "5"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
