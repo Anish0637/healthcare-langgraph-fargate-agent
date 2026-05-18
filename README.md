@@ -11,8 +11,11 @@ Production-oriented starter repository for a containerized LangGraph agent desig
 - PII/PHI redaction before model/tool usage
 - Tool governance with policy tags and allow/deny checks
 - Guardrails for unsafe prompt patterns and response leakage checks
+- JWT auth with claims-to-policy mapping
+- Structured redacted audit logs for security events
 - Dockerized app for ECS Fargate
 - ECS task definition template + deployment script
+- Terraform scaffold for VPC, ECS, ALB, DynamoDB, IAM, CloudWatch
 
 ## Security architecture
 
@@ -78,8 +81,35 @@ export ECS_TASK_FAMILY=healthcare-langgraph-agent
 ## Governance notes
 
 - This is a starter baseline. For production healthcare compliance:
-  - Integrate enterprise IdP/JWT verification
+  - Integrate enterprise IdP/JWKS verification
   - Enable KMS CMKs, VPC endpoints, private subnets, WAF
   - Add immutable audit trails and SIEM export
   - Map controls to HIPAA, HITRUST, SOC2 requirements
   - Add DLP and secrets scanning in CI/CD
+
+## JWT and policy mapping
+
+Send bearer token in `Authorization` header. Claims can override request identity fields:
+
+- `sub` or `user_id` -> `user_id`
+- `role` -> `role`
+- `tenant_id` -> `tenant_id`
+- `purpose_of_use` -> `purpose_of_use`
+- `attributes`, `context`, `patient_context` (merged)
+
+Set `.env`:
+
+```env
+JWT_REQUIRED=true
+JWT_SECRET=your-shared-secret
+JWT_ALGORITHM=HS256
+```
+
+## Terraform quick start
+
+```bash
+cd terraform
+terraform init
+terraform plan -var="container_image=<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/healthcare-langgraph-agent:latest"
+terraform apply -var="container_image=<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/healthcare-langgraph-agent:latest"
+```
