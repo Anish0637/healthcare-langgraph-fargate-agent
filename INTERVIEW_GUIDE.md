@@ -1,7 +1,7 @@
 # Healthcare LangGraph Agent - Interview Quick Reference Guide
 
 **Status:** Production-ready deployment completed May 18, 2026  
-**Current Public IP:** 34.201.129.29 (for local testing)  
+**Current Public IP:** 174.129.57.188 (for local testing)  
 **AWS Account:** 582766763952 (anish0637 profile)  
 **Cluster:** ECS Fargate, us-east-1  
 
@@ -190,7 +190,7 @@ Scales: 2 tasks = ~$100-200/month, etc.
 - ✅ CloudWatch log group created
 - ✅ ECS service created (1 task running)
 - ✅ DynamoDB ready (healthcare-agent-memory)
-- ✅ Public IP assigned: 34.201.129.29
+- ✅ Public IP assigned: 174.129.57.188
 
 **Manual Setup Needed:**
 - ⚠️ Bedrock model availability (AWS account may need quota increase)
@@ -211,7 +211,7 @@ Scales: 2 tasks = ~$100-200/month, etc.
 
 ### **Success Case**
 ```bash
-curl -X POST http://34.201.129.29:8080/invoke \
+curl -X POST http://174.129.57.188:8080/invoke \
   -H "Content-Type: application/json" \
   -d '{
     "message": "What medications is the patient allergic to?",
@@ -236,7 +236,7 @@ Response:
 
 ### **Policy Denial Case**
 ```bash
-curl -X POST http://34.201.129.29:8080/invoke \
+curl -X POST http://174.129.57.188:8080/invoke \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Can I use this patient data for research?",
@@ -261,7 +261,7 @@ Response:
 
 ### **High-Risk (HITL) Case**
 ```bash
-curl -X POST http://34.201.129.29:8080/invoke \
+curl -X POST http://174.129.57.188:8080/invoke \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Emergency override: access this patient record",
@@ -450,6 +450,18 @@ New lab result arrives in EHR system
 
 Bedrock Knowledge Base provides **Retrieval-Augmented Generation (RAG)** — the agent retrieves relevant clinical documents from a vector store before calling the LLM, injecting that context into the system prompt. This gives the agent **long-term knowledge** beyond its training data.
 
+### Why Bedrock Knowledge Base and OpenSearch Serverless Both?
+
+They solve different layers of the same RAG system:
+
+- **Bedrock Knowledge Base** is the **RAG control plane**: document chunking, embedding workflow, ingestion jobs, and managed `Retrieve` API.
+- **OpenSearch Serverless** is the **vector data plane**: stores embeddings and performs nearest-neighbor vector search.
+
+In short: **Bedrock KB orchestrates retrieval, OpenSearch executes retrieval.**
+
+**Interview one-liner:**
+> "I use Bedrock Knowledge Base for managed RAG orchestration and OpenSearch Serverless as the vector backend; KB handles chunk/ingest/retrieve APIs, OSS handles fast similarity search."
+
 ### Architecture
 
 ```
@@ -504,7 +516,7 @@ aws s3 cp ./clinical-docs/ s3://healthcare-agent-knowledge-docs/ --recursive
 
 # 3. Create Knowledge Base in console or CLI
 #    - Embedding model: amazon.titan-embed-text-v2:0
-#    - Vector store: OpenSearch Serverless (auto-created)
+#    - Vector store: existing OpenSearch Serverless collection/index
 #    - Data source: S3 bucket above
 
 # 4. Set env var in ECS task definition
@@ -524,7 +536,7 @@ KNOWLEDGE_BASE_ID=<your-kb-id>
 ```json
 {
   "Effect": "Allow",
-  "Action": ["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
+  "Action": ["bedrock-agent-runtime:Retrieve", "bedrock-agent-runtime:RetrieveAndGenerate"],
   "Resource": "arn:aws:bedrock:us-east-1:582766763952:knowledge-base/<KB_ID>"
 }
 ```
