@@ -13,6 +13,8 @@ Production-oriented starter repository for a containerized LangGraph agent desig
 - Guardrails for unsafe prompt patterns and response leakage checks
 - JWT auth with claims-to-policy mapping
 - Structured redacted audit logs for security events
+- Human-in-the-loop review queue for break-glass and high-risk requests
+- Multi-model Bedrock routing with safe fallback response handling
 - Dockerized app for ECS Fargate
 - ECS task definition template + deployment script
 - Terraform scaffold for VPC, ECS, ALB, DynamoDB, IAM, CloudWatch
@@ -29,6 +31,7 @@ Production-oriented starter repository for a containerized LangGraph agent desig
 5. Tool governance permits only approved tools for the request context.
 6. Response is checked/redacted before returning.
 7. Sanitized memory is saved to DynamoDB (encrypted at rest via AWS managed encryption).
+8. High-risk, break-glass, or explicitly flagged requests are routed to the human review queue before execution.
 
 ## Local run
 
@@ -61,6 +64,26 @@ curl -s -X POST http://127.0.0.1:8080/invoke \
     "attributes": {"department": "cardiology", "env": "prod"},
     "context": {"request_time_utc": "2026-05-18T12:00:00Z"}
   }'
+```
+
+If a request is queued for review, approve or reject it with:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/reviews/<review_id>/decision \
+  -H "Content-Type: application/json" \
+  -d '{
+    "approved": true,
+    "reviewer_id": "reviewer-1",
+    "reason": "approved for treatment"
+  }'
+```
+
+## Model fallback
+
+Set one or more Bedrock model IDs with `BEDROCK_MODEL_IDS` as a comma-separated list. The graph tries the models in order and falls back to a safe response if none of them are available.
+
+```env
+BEDROCK_MODEL_IDS=amazon.nova-micro-v1:0,anthropic.claude-3-haiku-20240307-v1:0
 ```
 
 ## ECS Fargate deployment

@@ -1,0 +1,38 @@
+graph TD
+    A["Raw User Input<br/>Message + Metadata"]
+    
+    A --> B["✓ JSON Validation<br/>Pydantic Models"]
+    B --> C["✓ PII Detection<br/>Email, Phone, SSN, etc"]
+    C --> D["✓ Policy Check<br/>RBAC/ABAC/CBAC"]
+    D --> E["✓ Guardrail Check<br/>Prompt Injection"]
+    E --> F["✓ HITL Check<br/>Break-glass, High-risk"]
+    F --> G["✓ Input Redaction<br/>Mask sensitive data"]
+    
+    G --> H["→ LangGraph Agent<br/>Sanitized Input"]
+    H --> I["→ Bedrock Model<br/>Safe Context"]
+    I --> J["← Model Output<br/>Raw Response"]
+    
+    J --> K["✓ Output Check<br/>Information Leakage"]
+    K --> L["✓ Output Redaction<br/>Remove PII/PHI"]
+    L --> M["✓ Memory Save<br/>DynamoDB"]
+    M --> N["✓ Audit Log<br/>CloudWatch Logs"]
+    N --> O["→ Return Response<br/>trace_id for correlation"]
+    
+    O --> P["Client Receives<br/>Safe, Redacted Output"]
+    
+    style A fill:#e3f2fd
+    style B fill:#fff9c4
+    style C fill:#f1f8e9
+    style D fill:#f1f8e9
+    style E fill:#f1f8e9
+    style F fill:#f1f8e9
+    style G fill:#ffebee
+    style H fill:#f3e5f5
+    style I fill:#f3e5f5
+    style J fill:#fff3e0
+    style K fill:#f1f8e9
+    style L fill:#ffebee
+    style M fill:#e0f2f1
+    style N fill:#f1f8e9
+    style O fill:#c8e6c9
+    style P fill:#c8e6c9

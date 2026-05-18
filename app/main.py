@@ -6,46 +6,19 @@ from pydantic import ValidationError
 
 from app.audit import audit_event
 from app.auth import AuthError, decode_bearer_token, merge_request_with_claims
+from app.hitl import HitlStore
 from app.governance import check_guardrails, sanitize_for_model, sanitize_for_output
 from app.graph import graph
 from app.memory import MemoryStore
-from app.models import InvokeRequest, InvokeResponse, HealthResponse
+from app.models import InvokeRequest, InvokeResponse, HealthResponse, ReviewDecisionRequest, ReviewResponse
 from app.security import authorize
 
 app = FastAPI(title="Healthcare LangGraph Agent", version="0.1.0")
 memory = MemoryStore()
+reviews = HitlStore()
 
 
-@app.get("/health", response_model=HealthResponse)
-def health():
-    return HealthResponse(status="ok")
-
-
-@app.post("/invoke", response_model=InvokeResponse)
-def invoke(request: InvokeRequest, authorization: str | None = Header(default=None)):
-    trace_id = str(uuid4())
-
-    try:
-        claims = decode_bearer_token(authorization)
-        merged = merge_request_with_claims(request.model_dump(), claims)
-        request = InvokeRequest(**merged)
-    except AuthError as exc:
-        audit_event("auth_denied", trace_id, {"reason": str(exc)})
-        return InvokeResponse(
-            output=f"Access denied: {exc}",
-            status="denied",
-            policy_decision="deny",
-            trace_id=trace_id,
-        )
-    except ValidationError as exc:
-        audit_event("request_invalid", trace_id, {"reason": str(exc)})
-        return InvokeResponse(
-            output=f"Invalid request after claim mapping: {exc}",
-            status="error",
-            policy_decision="deny",
-            trace_id=trace_id,
-        )
-
+def _process_request(request: InvokeRequest, trace_id: str, bypass_review: bool = False) -> InvokeResponse:
     decision = authorize(
         role=request.role,
         tenant_id=request.tenant_id,
@@ -82,6 +55,17 @@ def invoke(request: InvokeRequest, authorization: str | None = Header(default=No
             trace_id=trace_id,
         )
 
+    if not bypass_review and (request.context.get("break_glass") or request.context.get("human_review_required") or request.attributes.get("risk_level") == "high"):
+        review_id = reviews.create_review({"request": request.model_dump(), "trace_id": trace_id})
+        audit_event("human_review_requested", trace_id, {"review_id": review_id, "tenant_id": request.tenant_id})
+        return InvokeResponse(
+            output=f"Human review required. review_id={review_id}",
+            status="pending_human_review",
+            policy_decision="review",
+            trace_id=trace_id,
+            review_id=review_id,
+        )
+
     sanitized_input = sanitize_for_model(request.message)
 
     started = time.perf_counter()
@@ -108,6 +92,7 @@ def invoke(request: InvokeRequest, authorization: str | None = Header(default=No
             "role": request.role,
             "purpose_of_use": request.purpose_of_use,
             "duration_sec": duration,
+            "model_used": getattr(result["messages"][-1], "response_metadata", {}).get("selected_model", "unknown") if result.get("messages") else "unknown",
         },
     )
 
@@ -117,3 +102,56 @@ def invoke(request: InvokeRequest, authorization: str | None = Header(default=No
         policy_decision="allow",
         trace_id=trace_id,
     )
+
+
+@app.get("/health", response_model=HealthResponse)
+def health():
+    return HealthResponse(status="ok")
+
+
+@app.post("/invoke", response_model=InvokeResponse)
+def invoke(request: InvokeRequest, authorization: str | None = Header(default=None)):
+    trace_id = str(uuid4())
+
+    try:
+        claims = decode_bearer_token(authorization)
+        merged = merge_request_with_claims(request.model_dump(), claims)
+        request = InvokeRequest(**merged)
+    except AuthError as exc:
+        audit_event("auth_denied", trace_id, {"reason": str(exc)})
+        return InvokeResponse(
+            output=f"Access denied: {exc}",
+            status="denied",
+            policy_decision="deny",
+            trace_id=trace_id,
+        )
+    except ValidationError as exc:
+        audit_event("request_invalid", trace_id, {"reason": str(exc)})
+        return InvokeResponse(
+            output=f"Invalid request after claim mapping: {exc}",
+            status="error",
+            policy_decision="deny",
+            trace_id=trace_id,
+        )
+
+    return _process_request(request, trace_id, bypass_review=False)
+
+
+@app.post("/reviews/{review_id}/decision", response_model=ReviewResponse)
+def decide_review(review_id: str, decision: ReviewDecisionRequest):
+    item = reviews.get_review(review_id)
+    if not item:
+        return ReviewResponse(review_id=review_id, status="not_found", message="Review not found")
+
+    request_payload = item.get("request_json")
+    original = InvokeRequest.model_validate_json(request_payload)
+    trace_id = item.get("trace_id", str(uuid4()))
+
+    if not decision.approved:
+        reviews.update_review(review_id, "rejected", decision.reviewer_id, decision.reason or "rejected")
+        audit_event("human_review_rejected", trace_id, {"review_id": review_id, "reviewer_id": decision.reviewer_id})
+        return ReviewResponse(review_id=review_id, status="rejected", message="Request rejected by reviewer")
+
+    reviews.update_review(review_id, "approved", decision.reviewer_id, decision.reason or "approved")
+    response = _process_request(original, trace_id, bypass_review=True)
+    return ReviewResponse(review_id=review_id, status=response.status, message=response.output)

@@ -1,0 +1,75 @@
+graph TB
+    subgraph AWS["AWS Account 582766763952"]
+        subgraph VPC["VPC: vpc-01cd0b3707b8ba27c"]
+            subgraph ALB["Application Load Balancer<br/>Port 443 HTTPS"]
+                ALBCORE["ALB Core"]
+            end
+            
+            subgraph ECS["ECS Fargate Cluster: healthcare-agents"]
+                TASK1["Task 1<br/>FastAPI App<br/>512 CPU, 1GB RAM<br/>Port 8080"]
+                TASK2["Task 2<br/>FastAPI App<br/>512 CPU, 1GB RAM<br/>Port 8080"]
+                TASK3["Task N..."]
+            end
+            
+            subgraph SUBNET1["Subnet us-east-1b"]
+                TASK1
+            end
+            
+            subgraph SUBNET2["Subnet us-east-1f"]
+                TASK2
+            end
+            
+            subgraph SG["Security Group<br/>sg-08af0f1d09b790516<br/>Inbound: 8080"]
+                SGL["TCP 8080"]
+            end
+        end
+        
+        subgraph STORAGE["Storage & Persistence"]
+            DDB["DynamoDB<br/>healthcare-agent-memory<br/>Partition: tenant_id<br/>Sort: timestamp<br/>Encrypted at rest"]
+            ECR["ECR Repository<br/>healthcare-langgraph-agent<br/>:latest image"]
+        end
+        
+        subgraph MONITORING["Monitoring & Audit"]
+            CWL["CloudWatch Logs<br/>/ecs/healthcare-langgraph-agent<br/>Redacted audit trail"]
+            CWM["CloudWatch Metrics<br/>CPU, Memory, Task count"]
+        end
+        
+        subgraph IAM["IAM Roles"]
+            EXEC["ecsTaskExecutionRole<br/>ECR pull, CWL push"]
+            TASK["healthcare-langgraph-task-role<br/>DynamoDB, Bedrock, CWL"]
+        end
+        
+        subgraph BEDROCK["AWS Bedrock<br/>Foundation Models"]
+            MODEL1["Claude 3 Haiku"]
+            MODEL2["Amazon Nova Micro"]
+            MODEL3["+ Fallback Models"]
+        end
+    end
+    
+    CLIENT["Healthcare Client<br/>HTTPS Request"]
+    EXTERNAL["External Services<br/>Bedrock APIs"]
+    
+    CLIENT -->|HTTPS| ALBCORE
+    ALBCORE -->|Route| TASK1
+    ALBCORE -->|Route| TASK2
+    TASK1 --> DDB
+    TASK2 --> DDB
+    TASK1 --> CWL
+    TASK2 --> CWL
+    TASK1 --> BEDROCK
+    TASK2 --> BEDROCK
+    TASK1 --> ECR
+    TASK2 --> ECR
+    TASK1 -.->|Uses| EXEC
+    TASK1 -.->|Uses| TASK
+    BEDROCK --> EXTERNAL
+    
+    style AWS fill:#ff9800
+    style VPC fill:#fff3e0
+    style ALB fill:#ffb74d
+    style ECS fill:#f3e5f5
+    style STORAGE fill:#e1f5fe
+    style MONITORING fill:#f1f8e9
+    style IAM fill:#ffe0b2
+    style BEDROCK fill:#ffccbc
+    style CLIENT fill:#c8e6c9

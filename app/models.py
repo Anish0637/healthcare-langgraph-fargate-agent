@@ -18,7 +18,20 @@ class InvokeResponse(BaseModel):
     status: str
     policy_decision: str
     trace_id: str
+    review_id: str | None = None
 
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class ReviewDecisionRequest(BaseModel):
+    approved: bool
+    reviewer_id: str
+    reason: str | None = None
+
+
+class ReviewResponse(BaseModel):
+    review_id: str
+    status: str
+    message: str

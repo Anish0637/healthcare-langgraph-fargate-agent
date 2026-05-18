@@ -1,0 +1,37 @@
+graph LR
+    A["Request Claims<br/>user_id, role,<br/>tenant_id, purpose<br/>attributes, context"]
+    
+    A --> B["RBAC Layer<br/>Role → Permissions<br/>Clinician: treatment<br/>Billing: payment<br/>Researcher: research"]
+    
+    B -->|Check Role| C{Role Allowed?}
+    C -->|No| D["DENY"]
+    C -->|Yes| E["ABAC Layer<br/>Attributes Check<br/>Tenant isolation<br/>Data class<br/>Department"]
+    
+    E --> F{Attributes OK?}
+    F -->|No| D
+    F -->|Yes| G["CBAC Layer<br/>Context Check<br/>Time windows<br/>Risk level<br/>Break-glass flag"]
+    
+    G --> H{Context OK?}
+    H -->|No| D
+    H -->|Yes| I["Consent Check<br/>Patient approval"]
+    
+    I --> J{Consent Valid?}
+    J -->|No| D
+    J -->|Yes| K["ALLOW<br/>Proceed to next step"]
+    
+    D --> L["Audit: policy_denied"]
+    K --> M["Audit: policy_allowed"]
+    
+    style A fill:#e3f2fd
+    style B fill:#f3e5f5
+    style C fill:#fff3e0
+    style E fill:#f3e5f5
+    style F fill:#fff3e0
+    style G fill:#f3e5f5
+    style H fill:#fff3e0
+    style I fill:#f3e5f5
+    style J fill:#fff3e0
+    style D fill:#ffebee
+    style K fill:#e8f5e9
+    style L fill:#ffccbc
+    style M fill:#c8e6c9

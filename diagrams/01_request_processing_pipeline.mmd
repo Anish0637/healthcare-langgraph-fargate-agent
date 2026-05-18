@@ -1,0 +1,36 @@
+graph TD
+    A["Client Request"] -->|HTTPS + JWT| B["ALB<br/>Port 443"]
+    B -->|Port 8080| C["FastAPI App<br/>ECS Fargate Task"]
+    
+    C --> D1["Step 1: Auth<br/>Decode JWT Token"]
+    D1 --> D2["Step 2: Authorization<br/>RBAC/ABAC/CBAC"]
+    D2 --> D3["Step 3: Guardrail Check<br/>Prompt Injection Detection"]
+    D3 --> D4["Step 4: HITL Decision<br/>Break-glass/High-risk"]
+    D4 -->|Needs Review| E["HITL Queue<br/>DynamoDB"]
+    D4 -->|Approved| D5["Step 5: Input Sanitization<br/>PII/PHI Redaction"]
+    
+    D5 --> D6["Step 6: LangGraph Agent<br/>Bedrock Model Invocation"]
+    D6 --> D7["Step 7: Output Sanitization<br/>PII/PHI Redaction"]
+    D7 --> D8["Step 8: Memory Persistence<br/>DynamoDB Save"]
+    D8 --> D9["Step 9: Audit Logging<br/>CloudWatch Logs"]
+    D9 --> F["Response JSON<br/>+ trace_id"]
+    
+    E -->|Reviewer Decision| G["HITL Resolution<br/>Approved/Rejected"]
+    
+    F -->|Response| H["Client Receives<br/>Result"]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff3e0
+    style C fill:#f3e5f5
+    style D1 fill:#e8f5e9
+    style D2 fill:#e8f5e9
+    style D3 fill:#e8f5e9
+    style D4 fill:#e8f5e9
+    style D5 fill:#fce4ec
+    style D6 fill:#f3e5f5
+    style D7 fill:#fce4ec
+    style D8 fill:#fff3e0
+    style D9 fill:#f1f8e9
+    style E fill:#ffccbc
+    style G fill:#ffccbc
+    style H fill:#c8e6c9
