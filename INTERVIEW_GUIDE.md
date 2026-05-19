@@ -397,50 +397,236 @@ A: ECS auto-scaling: Set target CPU (70%) → scales up/down. DynamoDB on-demand
 
 ## ⚙️ Step Functions & Event Layer
 
-### Why Step Functions in a LangGraph Agent?
-
-LangGraph handles **linear/cyclic graph execution within a single request**. Step Functions adds value for **async, long-running, or distributed orchestration** that outlives a single HTTP request.
-
-**Example — Prior Authorization Workflow:**
-```
-Patient submits prior auth request
-  → Lambda: LangGraph agent collects clinical data (30s)
-  → Step Functions WAIT state: pause 24–72 hours for doctor review
-  → Lambda: LangGraph agent resumes, checks approval status
-  → Lambda: Notify patient/insurance
-```
-LangGraph cannot "pause for 72 hours" — it's stateless per invocation. Step Functions manages the long-lived state machine.
-
-**Use Step Functions when you need:**
-- Multi-day HITL approval flows (prior auth, prescriptions)
-- Retry logic with exponential backoff across multiple agents
-- Parallel fan-out: run 5 specialist agents simultaneously, wait for all (`Map` state)
-- Coordinating multiple LangGraph agents as sub-tasks
+> **Reference diagram:** `diagrams/06_event_layer_step_functions.png`
 
 ---
 
-### Why an Event Layer (EventBridge + SQS/SNS)?
+### Complete Event Catalogue (from audit.py + main.py)
 
-LangGraph is synchronous request-response. The event layer decouples producers from consumers and enables **reactive, asynchronous triggering**.
+The agent emits **7 audit event types** via `audit_event()` → `logger.info(json.dumps(record))` → CloudWatch Logs.  
+In a production event-driven architecture each event is also published to **EventBridge** and/or **SQS**.
 
-**Example — EHR Record Update Trigger:**
+| # | Event Type | Emitted When | Severity | EventBridge Source |
+|---|---|---|---|---|
+| 1 | `auth_denied` | JWT invalid / missing / expired | CRITICAL | `healthcare.agent.security` |
+| 2 | `request_invalid` | Schema validation fails / rate limit hit | WARNING | `healthcare.agent.validation` |
+| 3 | `policy_denied` | RBAC / ABAC / CBAC check fails | HIGH | `healthcare.agent.governance` |
+| 4 | `guardrail_blocked` | Prompt injection / unsafe content detected | HIGH | `healthcare.agent.safety` |
+| 5 | `human_review_requested` | High-risk request routed to HITL queue | INFO | `healthcare.agent.hitl` |
+| 6 | `human_review_rejected` | Reviewer rejected the HITL request | HIGH | `healthcare.agent.hitl` |
+| 7 | `invoke_success` | Agent completed and returned response | INFO | `healthcare.agent.invoke` |
+
+**Event envelope** (every event shares this schema):
+```json
+{
+  "event_type": "auth_denied",
+  "trace_id": "uuid-v4",
+  "tenant_id": "hospital-a",
+  "user_id": "REDACTED",
+  "timestamp": "2026-05-19T10:30:00Z",
+  "payload": { "reason": "token_expired" }
+}
 ```
-New lab result arrives in EHR system
-  → EventBridge rule: matches event pattern {source: "ehr.labs"}
-  → SQS queue: buffers the event
-  → Lambda consumer: invokes LangGraph agent with lab data
-  → Agent: analyzes result, checks drug interactions, alerts clinician
+
+---
+
+### EventBridge Routing — Fan-Out Per Event
+
+EventBridge is the **fan-out layer**: one event → multiple independent downstream consumers via routing rules.
+
+```python
+events_client.put_events(Entries=[{
+    "Source": "healthcare.agent.security",
+    "DetailType": "auth_denied",
+    "Detail": json.dumps({"tenant_id": "hospital-a", "trace_id": "abc-123"}),
+    "EventBusName": "healthcare-agent-bus"
+}])
 ```
 
-| Scenario | Without Event Layer | With Event Layer |
+| Event | EventBridge Rule Targets |
+|---|---|
+| `auth_denied` | WAF IP block Lambda + CloudWatch alarm + SNS security alert |
+| `policy_denied` | SIEM ingest Lambda + Compliance Queue (SQS) + Audit DynamoDB |
+| `guardrail_blocked` | Safety metrics Lambda + model re-tune pipeline trigger |
+| `human_review_requested` | HITL Queue (SQS FIFO) + SLA watchdog Lambda (starts 72h timer) |
+| `invoke_success` | Usage analytics Lambda + billing ledger Lambda + tenant metering |
+| `request_invalid` | Rate-limit monitor + DDoS detection Lambda |
+| `human_review_rejected` | Escalation Lambda + compliance audit log |
+
+**Decision rule for interviews:**
+> EventBridge = **1 event → N consumers** (decoupled fan-out, filter rules, schema registry)  
+> SQS = **1 event → 1 consumer** (guaranteed once, DLQ, backpressure, FIFO ordering)
+
+---
+
+### SQS Queues — Durable Point-to-Point Processing
+
+| Queue | Type | Trigger Event | Consumer | DLQ Behaviour |
+|---|---|---|---|---|
+| `HITL-Review-Queue.fifo` | FIFO | `human_review_requested` | Reviewer Lambda | DLQ → auto-escalate after 3 retries |
+| `Audit-Ingestion-Queue` | Standard | `invoke_success` | HIPAA audit writer Lambda | DLQ → manual ops reprocess |
+| `Compliance-Queue` | Standard | `policy_denied` / `auth_denied` | Compliance processor Lambda | DLQ → security team SNS alert |
+| `Safety-Review-Queue` | Standard | `guardrail_blocked` | Safety analyst Lambda | DLQ → model review pipeline |
+
+**HITL FIFO queue code** (replaces in-memory `HitlStore` in `app/hitl.py`):
+```python
+sqs.send_message(
+    QueueUrl=HITL_QUEUE_URL,
+    MessageGroupId=tenant_id,           # FIFO: group per tenant
+    MessageDeduplicationId=review_id,   # idempotency
+    MessageBody=json.dumps({
+        "event_type": "human_review_requested",
+        "review_id": review_id,
+        "trace_id": trace_id,
+        "tenant_id": tenant_id,
+        "message": original_message,
+        "task_token": sfn_task_token    # Step Functions callback token
+    })
+)
+```
+
+---
+
+### AWS Step Functions — Multi-Step Workflow Scenarios
+
+**Why LangGraph alone is not enough:**  
+LangGraph handles *synchronous, single-request* graph execution. Step Functions adds *durable, async, long-running* orchestration that survives ECS task restarts, spans days, and coordinates multiple services.
+
+**Decision matrix:**
+
+| Need | Use |
+|---|---|
+| Execute LLM logic, tool calls within a request | LangGraph |
+| Pause for hours/days awaiting human input | Step Functions (Standard) |
+| Retry with exponential backoff across services | Step Functions Retry/Catch |
+| Fan-out N parallel tasks, wait for all | Step Functions Map state |
+| High-volume short pipeline (<5 min) | Step Functions Express |
+| Decouple producer from consumer | EventBridge + SQS |
+
+---
+
+#### Scenario 1: HITL Review Workflow [Standard, up to 72h]
+
+```
+[START]
+  → ValidateRequest
+  → InvokeAgent (LangGraph graph.py)
+  → GuardrailCheck
+      Catch: GuardrailBlocked → AuditAndEnd
+  → PolicyEnforce
+      Catch: PolicyDenied   → AuditAndEnd
+  → NeedsHITL? (Choice state)
+      no  → ReturnResponse → END
+      yes → SendToHITL (SQS FIFO + task token)
+          → WaitForCallback [HeartbeatSeconds: 259200 = 72h]
+              → Decision? (Choice state)
+                  approved → ReturnResponse → END
+                  rejected → AuditAndEnd   → END
+```
+
+**Key pattern — WaitForCallback + task token:**  
+Step Functions pauses the execution (for up to 72h), no polling needed.  
+When reviewer submits decision, their endpoint calls:
+```python
+sfn.send_task_success(
+    taskToken=token_from_sqs_message,
+    output=json.dumps({"decision": "approved", "reviewer_id": "dr-smith"})
+)
+```
+
+**Retry / Catch config** on every LLM/Lambda state:
+```json
+{
+  "Retry": [{"ErrorEquals": ["States.ALL"], "MaxAttempts": 3, "BackoffRate": 2, "IntervalSeconds": 1}],
+  "Catch": [
+    {"ErrorEquals": ["ThrottlingException"], "Next": "FallbackModel"},
+    {"ErrorEquals": ["States.ALL"],          "Next": "AuditAndEnd"}
+  ]
+}
+```
+
+---
+
+#### Scenario 2: Document Ingestion Pipeline [Express, <5 min]
+
+```
+[S3 Upload → EventBridge trigger]
+  → ValidateDocument (Lambda)
+  → PIIDetect (Comprehend Medical)
+  → PIIRedact (Lambda)
+  → Map state: EmbedAllChunks [maxConcurrency: 10, parallel per chunk]
+      each chunk: EmbedChunk (Titan Embeddings) → IndexChunk (OpenSearch AOSS)
+  → UpdateIngestionStatus (DynamoDB)
+  → NotifyComplete (SNS)
+  → [END]
+```
+
+**Why Express Workflow here:** fast (<5 min), high-frequency (many documents), at-least-once is acceptable for re-indexing, cost = per-duration (cheap).  
+**Why Standard for HITL:** execution history needed for audit, exactly-once semantics, may wait days.
+
+---
+
+#### Scenario 3: Multi-Tenant Rate Limit + Retry
+
+```
+[ReceiveRequest]
+  → CheckRateLimit (DynamoDB) → Choice:
+      exceeded → Return429 → END
+      ok       → InvokeBedrockWithRetry
+                   Retry: [maxAttempts=3, backoffRate=2]
+                   Catch: ThrottlingException → FallbackModel
+                          States.ALL         → AuditError → Return500
+  → AuditSuccess → Return200
+```
+
+**Interview angle:** This replaces the manual `_invoke_with_fallback()` try/except in `app/graph.py` with declarative, observable retry logic visible in the Step Functions console.
+
+---
+
+#### Scenario 4: Scheduled Compliance Report [Express, daily]
+
+```
+[EventBridge Scheduler: daily 02:00 UTC]
+  → QueryAuditLogs (CloudWatch Insights Lambda)
+  → AggregateByTenant (Lambda)
+  → Map state: per-tenant [parallel]
+      → GeneratePDFReport (Lambda)
+      → EncryptReport (KMS)
+      → StoreToS3 (Lambda)
+      → EmailReport (SES)
+  → UpdateComplianceDashboard (DynamoDB)
+  → [END]
+```
+
+---
+
+### Standard vs Express — Interview Must-Know
+
+| | Standard | Express |
 |---|---|---|
-| EHR sends 1000 records at once | Agent overloaded, dropped | SQS buffers, processes at safe rate |
-| Agent fails mid-processing | Data lost | SQS retries + dead-letter queue |
-| Multiple downstream consumers | EHR must know all endpoints | EventBridge fan-out to N subscribers |
-| Scheduled agent runs | Cron on EC2 | EventBridge Scheduler → Lambda → Agent |
+| Max duration | 1 year | 5 minutes |
+| Execution semantics | Exactly-once | At-least-once |
+| Use case in this project | HITL review (multi-day) | Document ingestion, reports |
+| Pricing | Per state transition | Per duration + invocations |
+| Execution history | Full history in console | CloudWatch Logs only |
+| Audit trail | Built-in | Must configure CW |
+
+---
+
+### Mapping Existing Audit Events → Step Functions States
+
+| Existing `audit_event()` in main.py | Step Functions state outcome |
+|---|---|
+| `auth_denied` | `ValidateRequest` → Fail state |
+| `request_invalid` | `ValidateRequest` → Fail state |
+| `policy_denied` | `PolicyEnforce` → Catch → `AuditAndEnd` |
+| `guardrail_blocked` | `GuardrailCheck` → Catch → `AuditAndEnd` |
+| `human_review_requested` | Entry into `WaitForCallback` state |
+| `human_review_rejected` | `SendTaskFailure` from reviewer endpoint |
+| `invoke_success` | Terminal success state → `ReturnResponse` |
 
 **Interview one-liner:**
-> "LangGraph handles *what to think*, Step Functions handles *when to act*, EventBridge/SQS handles *what triggered the action*."
+> "LangGraph handles *what to think*, Step Functions handles *when to act*, EventBridge handles *what triggered the action*, and SQS ensures *nothing is dropped*."
 
 ---
 
