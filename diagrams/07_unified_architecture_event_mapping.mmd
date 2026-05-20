@@ -1,0 +1,121 @@
+flowchart LR
+    U[Users / Apps] --> A[API Gateway]
+    A --> O[Agent Orchestrator\nLambda or ECS Fargate]
+    O --> DA[Direct answer\nSynchronous HTTP response]
+    O --> RR[Response Router\nReturn final answer to user]
+
+    O --> M[Amazon Bedrock\nLLM + Guardrails]
+    O --> W[AWS Step Functions\nMulti-step workflow]
+    O --> T[Tool Executors\nLambda Functions]
+    T --> I[Enterprise Systems\nRDS / SaaS / Internal APIs]
+
+    O --> R[Memory & Retrieval]
+    R --> D[DynamoDB\nSession memory]
+    R --> S[S3 clinical documents\nGuidelines / policies]
+    R --> KB[Bedrock Knowledge Base\nRAG control plane]
+    S --> INGEST[Ingestion flow\nChunk + embed documents]
+    INGEST --> EMB[Titan Embeddings\nCreate vectors]
+    EMB --> OSS[OpenSearch Serverless\nVector Store]
+    KB --> OSS
+
+    O --> RET[Query flow\nRetrieve top passages]
+    RET --> KB
+    OSS --> RET
+    RET --> CTX[Inject retrieved context\ninto system prompt]
+    CTX --> M
+
+    O --> E[Event Layer\nEventBridge + SQS/SNS]
+    E --> EB[EventBridge Bus\nhealthcare-agent-bus]
+    EB --> ES1[auth_denied\nWAF block + alarm + SNS]
+    EB --> ES2[request_invalid\nrate-limit + DDoS monitor]
+    EB --> ES3[policy_denied\nSIEM + compliance queue]
+    EB --> ES4[guardrail_blocked\nsafety metrics + retrain]
+    EB --> ES5[human_review_requested\nHITL FIFO + SLA watchdog]
+    EB --> ES6[human_review_rejected\nescalation + audit log]
+    EB --> ES7[invoke_success\nusage analytics + billing]
+
+    ES5 --> SQ1[HITL Review Queue.fifo\nReviewer Lambda + task token]
+    ES3 --> SQ2[Compliance Queue\nAudit writer Lambda]
+    ES4 --> SQ3[Safety Review Queue\nSafety analyst Lambda]
+    ES7 --> SQ4[Audit Ingestion Queue\nHIPAA audit writer]
+
+    SQ1 --> SF1[AWS Step Functions\nHITL Review Workflow\nStandard]
+    SF1 --> WF[WaitForCallback\n72h task token]
+    WF --> DEC[Decision?]
+    DEC -->|approved| HR[Human answer / approval]
+    DEC -->|rejected| BAD[AuditAndEnd]
+    HR --> RR
+
+    SQ2 --> SF2[AWS Step Functions\nCompliance Workflow\nStandard]
+    SQ3 --> SF3[AWS Step Functions\nSafety Review Workflow\nStandard]
+    SQ4 --> SF4[AWS Step Functions\nIngestion Workflow\nExpress]
+    SF4 --> MAP[Map state\nParallel chunk embedding]
+
+    DA --> RR
+    M --> RR
+    W --> RR
+    T --> RR
+    BAD --> SAFE[Safe refusal / escalation reply]
+    SAFE --> RR
+    MAP --> RR
+    RR --> U
+
+    O --> C1[CloudWatch Logs]
+    O --> C2[CloudWatch Metrics/Alarms]
+    O --> C3[X-Ray Tracing]
+
+    A --> G5[WAF + Shield]
+    O --> G1[IAM Roles]
+    O --> G2[KMS Encryption]
+    O --> G3[Secrets Manager]
+    O --> G4[CloudTrail Audit]
+
+    style U fill:#e3f2fd
+    style A fill:#fff3e0
+    style O fill:#e8f5e9
+    style M fill:#f3e5f5
+    style DA fill:#e8f5e9
+    style W fill:#f1f8e9
+    style T fill:#ede7f6
+    style I fill:#ffe0b2
+    style R fill:#e0f2f1
+    style D fill:#e1f5fe
+    style S fill:#e1f5fe
+    style INGEST fill:#e8eaf6
+    style RET fill:#e0f2f1
+    style KB fill:#e8eaf6
+    style EMB fill:#e8eaf6
+    style OSS fill:#e8eaf6
+    style CTX fill:#ede7f6
+    style E fill:#fce4ec
+    style EB fill:#fce4ec
+    style ES1 fill:#ffebee
+    style ES2 fill:#fff9c4
+    style ES3 fill:#ffebee
+    style ES4 fill:#ffebee
+    style ES5 fill:#e3f2fd
+    style ES6 fill:#fff9c4
+    style ES7 fill:#e8f5e9
+    style SQ1 fill:#e3f2fd
+    style SQ2 fill:#ffebee
+    style SQ3 fill:#fff9c4
+    style SQ4 fill:#e8f5e9
+    style SF1 fill:#e3f2fd
+    style SF2 fill:#ffebee
+    style SF3 fill:#fff9c4
+    style SF4 fill:#e8f5e9
+    style WF fill:#ffebee
+    style DEC fill:#ede7f6
+    style HR fill:#e8f5e9
+    style BAD fill:#ffebee
+    style SAFE fill:#fff9c4
+    style RR fill:#e8f5e9
+    style MAP fill:#ede7f6
+    style G1 fill:#ffecb3
+    style G2 fill:#ffecb3
+    style G3 fill:#ffecb3
+    style G4 fill:#ffecb3
+    style G5 fill:#ffecb3
+    style C1 fill:#dcedc8
+    style C2 fill:#dcedc8
+    style C3 fill:#dcedc8

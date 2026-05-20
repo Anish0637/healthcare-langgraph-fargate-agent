@@ -14,3 +14,9 @@ SYSTEM_PROMPT = os.getenv(
 KNOWLEDGE_BASE_ID = os.getenv("KNOWLEDGE_BASE_ID", "")  # e.g. "ABCD1234EF"
 KNOWLEDGE_BASE_MAX_RESULTS = int(os.getenv("KNOWLEDGE_BASE_MAX_RESULTS", "5"))
 KNOWLEDGE_BASE_ENABLED = bool(KNOWLEDGE_BASE_ID)
+
+# LangSmith tracing (set LANGCHAIN_TRACING_V2=true to enable)
+LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false")
+LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
+LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "healthcare-langgraph-agent")
+LANGCHAIN_ENDPOINT = os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")

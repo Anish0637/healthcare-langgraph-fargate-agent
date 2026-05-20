@@ -1,3 +1,4 @@
+import os
 import time
 from uuid import uuid4
 
@@ -5,6 +6,14 @@ from fastapi import FastAPI, Header
 from pydantic import ValidationError
 
 from app.audit import audit_event
+from app.config import LANGCHAIN_API_KEY, LANGCHAIN_ENDPOINT, LANGCHAIN_PROJECT, LANGCHAIN_TRACING_V2
+
+# Activate LangSmith tracing if the API key is present
+if LANGCHAIN_API_KEY:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", LANGCHAIN_TRACING_V2)
+    os.environ.setdefault("LANGCHAIN_API_KEY", LANGCHAIN_API_KEY)
+    os.environ.setdefault("LANGCHAIN_PROJECT", LANGCHAIN_PROJECT)
+    os.environ.setdefault("LANGCHAIN_ENDPOINT", LANGCHAIN_ENDPOINT)
 from app.auth import AuthError, decode_bearer_token, merge_request_with_claims
 from app.hitl import HitlStore
 from app.governance import check_guardrails, sanitize_for_model, sanitize_for_output
@@ -12,6 +21,13 @@ from app.graph import graph
 from app.memory import MemoryStore
 from app.models import InvokeRequest, InvokeResponse, HealthResponse, ReviewDecisionRequest, ReviewResponse
 from app.security import authorize
+
+try:
+    from langsmith import trace as ls_trace
+    LANGSMITH_AVAILABLE = bool(LANGCHAIN_API_KEY)
+except ImportError:
+    ls_trace = None
+    LANGSMITH_AVAILABLE = False
 
 app = FastAPI(title="Healthcare LangGraph Agent", version="0.1.0")
 memory = MemoryStore()
@@ -69,7 +85,17 @@ def _process_request(request: InvokeRequest, trace_id: str, bypass_review: bool 
     sanitized_input = sanitize_for_model(request.message)
 
     started = time.perf_counter()
-    result = graph.invoke({"messages": [("user", sanitized_input)]})
+    run_config = {
+        "run_name": f"invoke-{trace_id[:8]}",
+        "tags": [request.tenant_id, request.role, request.purpose_of_use],
+        "metadata": {
+            "trace_id": trace_id,
+            "tenant_id": request.tenant_id,
+            "user_id": request.user_id,
+            "role": request.role,
+        },
+    }
+    result = graph.invoke({"messages": [("user", sanitized_input)]}, config=run_config)
     duration = time.perf_counter() - started
 
     output = result["messages"][-1].content if result.get("messages") else ""
